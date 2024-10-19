@@ -23,7 +23,7 @@ def _skip_lines(f, args):
 class CSVStack(CSVKitUtility):
     description = 'Stack up the rows from multiple CSV files, optionally adding a grouping value.'
     # Override 'f' because the utility accepts multiple files.
-    override_flags = ['f', 'L', 'blanks', 'date-format', 'datetime-format']
+    override_flags = ['f', 'L', 'I']
 
     def add_arguments(self):
         self.argparser.add_argument(
@@ -41,7 +41,7 @@ class CSVStack(CSVKitUtility):
             help='Use the filename of each input file as its grouping value. When specified, -g will be ignored.')
 
     def main(self):
-        if isatty(sys.stdin) and not self.args.input_paths:
+        if isatty(sys.stdin) and self.args.input_paths == ['-']:
             sys.stderr.write('No input file or piped data provided. Waiting for standard input:\n')
 
         has_groups = self.args.groups is not None or self.args.group_by_filenames
@@ -108,7 +108,7 @@ class CSVStack(CSVKitUtility):
             output.writerow(headers)
 
         for i, path in enumerate(self.args.input_paths):
-            f = self._open_input_file(path)
+            f = self._open_input_file(path, opened=True)
             file_is_stdin = path == '-'
 
             if has_groups:

@@ -2,19 +2,27 @@
 Release process
 ===============
 
-.. admonition:: One-time setup
+#. All tests pass on continuous integration
+#. The changelog is up-to-date and dated
+#. If new options are added, regenerate the usage information in the documentation with, for example:
 
    .. code-block:: bash
 
-      pip install --upgrade build twine
+      stty cols 80
+      csvformat -h
+      stty sane
 
-#. All tests pass on continuous integration
-#. The changelog is up-to-date and dated
 #. The version number is correct in:
 
-    -  setup.py
-    -  docs/conf.py
-    -  csvkit/cli.py
+   -  setup.py
+   -  docs/conf.py
+   -  csvkit/cli.py
+
+#. Regenerate the man pages:
+
+   .. code-block:: bash
+
+      sphinx-build -b man docs man
 
 #. Check for new authors:
 
@@ -28,13 +36,3 @@ Release process
 
       git tag -a x.y.z -m 'x.y.z release.'
       git push --follow-tags
-
-#. Upload to PyPI:
-
-   .. code-block:: bash
-
-      rm -rf dist
-      python -m build --sdist --wheel
-      twine upload dist/*
-
-#. Build the documentation on ReadTheDocs manually

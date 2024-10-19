@@ -1,5 +1,5 @@
+import io
 import sys
-from io import StringIO
 from unittest.mock import patch
 
 from csvkit.utilities.csvsort import CSVSort, launch_new_instance
@@ -41,6 +41,16 @@ class TestCSVSort(CSVKitTestCase, ColumnsTests, EmptyFileTests, NamesTests):
         new_order = [str(r[0]) for r in reader]
         self.assertEqual(test_order, new_order)
 
+    def test_ignore_case(self):
+        self.assertRows(['-i', 'examples/test_ignore_case.csv'], [
+            ['a', 'b', 'c'],
+            ['3', '2009-01-01', 'd'],
+            ['20', '2001-01-01', 'c'],
+            ['20', '2002-01-01', 'b'],
+            ['100', '2003-01-01', 'a'],
+            ['100', '2003-01-01', 'A'],
+        ])
+
     def test_no_blanks(self):
         reader = self.get_output_as_reader(['examples/blanks.csv'])
         test_order = [
@@ -78,7 +88,7 @@ class TestCSVSort(CSVKitTestCase, ColumnsTests, EmptyFileTests, NamesTests):
         self.assertEqual(test_order, new_order)
 
     def test_stdin(self):
-        input_file = StringIO('a,b,c\n4,5,6\n1,2,3\n')
+        input_file = io.BytesIO(b'a,b,c\n4,5,6\n1,2,3\n')
 
         with stdin_as_string(input_file):
             self.assertLines([], [

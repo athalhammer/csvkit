@@ -1,17 +1,31 @@
 #!/usr/bin/env python
-
 import argparse
+import ast
 import bz2
+import csv
+import datetime
+import decimal
 import gzip
 import itertools
 import lzma
+import os
+import re
 import sys
 import warnings
+from glob import glob
 from os.path import splitext
 
 import agate
+from agate.data_types.base import DEFAULT_NULL_VALUES
 
 from csvkit.exceptions import ColumnIdentifierError, RequiredHeaderError
+
+try:
+    import zstandard
+except ImportError:
+    zstandard = None
+
+QUOTING_CHOICES = sorted(getattr(csv, name) for name in dir(csv) if name.startswith('QUOTE_'))
 
 
 class LazyFile:
@@ -32,10 +46,7 @@ class LazyFile:
         self._lazy_kwargs = kwargs
 
     def __getattr__(self, name):
-        if not self._is_lazy_opened:
-            self.f = self.init(*self._lazy_args, **self._lazy_kwargs)
-            self._is_lazy_opened = True
-
+        self._open()
         return getattr(self.f, name)
 
     def __iter__(self):
@@ -48,11 +59,13 @@ class LazyFile:
             self._is_lazy_opened = False
 
     def __next__(self):
+        self._open()
+        return next(self.f).replace('\0', '')
+
+    def _open(self):
         if not self._is_lazy_opened:
             self.f = self.init(*self._lazy_args, **self._lazy_kwargs)
             self._is_lazy_opened = True
-
-        return next(self.f)
 
 
 class CSVKitUtility:
@@ -60,18 +73,30 @@ class CSVKitUtility:
     epilog = ''
     override_flags = ''
 
-    def __init__(self, args=None, output_file=None):
+    def __init__(self, args=None, output_file=None, error_file=None):
         """
         Perform argument processing and other setup for a CSVKitUtility.
         """
+        if args is None:
+            args = sys.argv[1:]
+        if os.name == 'nt':
+            args = _expand_args(args)
+
         self._init_common_parser()
         self.add_arguments()
         self.args = self.argparser.parse_args(args)
+
         # Output file is only set during testing.
         if output_file is None:
             self.output_file = sys.stdout
         else:
             self.output_file = output_file
+
+        # Error file is only set during testing.
+        if error_file is None:
+            self.error_file = sys.stderr
+        else:
+            self.error_file = error_file
 
         self.reader_kwargs = self._extract_csv_reader_kwargs()
         self.writer_kwargs = self._extract_csv_writer_kwargs()
@@ -155,9 +180,9 @@ class CSVKitUtility:
                 help='Character used to quote strings in the input CSV file.')
         if 'u' not in self.override_flags:
             self.argparser.add_argument(
-                '-u', '--quoting', dest='quoting', type=int, choices=[0, 1, 2, 3],
-                help='Quoting style used in the input CSV file. 0 = Quote Minimal, 1 = Quote All, '
-                     '2 = Quote Non-numeric, 3 = Quote None.')
+                '-u', '--quoting', dest='quoting', type=int, choices=QUOTING_CHOICES,
+                help='Quoting style used in the input CSV file: 0 quote minimal, 1 quote all, '
+                     '2 quote non-numeric, 3 quote none.')
         if 'b' not in self.override_flags:
             self.argparser.add_argument(
                 '-b', '--no-doublequote', dest='doublequote', action='store_false',
@@ -165,7 +190,7 @@ class CSVKitUtility:
         if 'p' not in self.override_flags:
             self.argparser.add_argument(
                 '-p', '--escapechar', dest='escapechar',
-                help='Character used to escape the delimiter if --quoting 3 ("Quote None") is specified and to escape '
+                help='Character used to escape the delimiter if --quoting 3 ("quote none") is specified and to escape '
                      'the QUOTECHAR if --no-doublequote is specified.')
         if 'z' not in self.override_flags:
             self.argparser.add_argument(
@@ -183,18 +208,22 @@ class CSVKitUtility:
             self.argparser.add_argument(
                 '-S', '--skipinitialspace', dest='skipinitialspace', action='store_true',
                 help='Ignore whitespace immediately following the delimiter.')
-        if 'blanks' not in self.override_flags:
+        if 'I' not in self.override_flags:
             self.argparser.add_argument(
                 '--blanks', dest='blanks', action='store_true',
                 help='Do not convert "", "na", "n/a", "none", "null", "." to NULL.')
-        if 'date-format' not in self.override_flags:
+            self.argparser.add_argument(
+                '--null-value', dest='null_values', nargs='+', default=[],
+                help='Convert this value to NULL. --null-value can be specified multiple times.')
             self.argparser.add_argument(
                 '--date-format', dest='date_format',
                 help='Specify a strptime date format string like "%%m/%%d/%%Y".')
-        if 'datetime-format' not in self.override_flags:
             self.argparser.add_argument(
                 '--datetime-format', dest='datetime_format',
                 help='Specify a strptime datetime format string like "%%m/%%d/%%Y %%I:%%M %%p".')
+            self.argparser.add_argument(
+                '--no-leading-zeroes', dest='no_leading_zeroes', action='store_true',
+                help='Do not convert a numeric value with leading zeroes to a number.')
         if 'H' not in self.override_flags:
             self.argparser.add_argument(
                 '-H', '--no-header-row', dest='no_header_row', action='store_true',
@@ -224,14 +253,17 @@ class CSVKitUtility:
                      '1-based numbering.')
 
         self.argparser.add_argument(
-            '-V', '--version', action='version', version='%(prog)s 1.1.1',
+            '-V', '--version', action='version', version='%(prog)s 2.0.1',
             help='Display version information and exit.')
 
-    def _open_input_file(self, path):
+    def _open_input_file(self, path, opened=False):
         """
         Open the input file specified on the command line.
         """
         if not path or path == '-':
+            # "UnsupportedOperation: It is not possible to set the encoding or newline of stream after the first read"
+            if not opened:
+                sys.stdin.reconfigure(encoding=self.args.encoding)
             f = sys.stdin
         else:
             extension = splitext(path)[1]
@@ -240,8 +272,10 @@ class CSVKitUtility:
                 func = gzip.open
             elif extension == '.bz2':
                 func = bz2.open
-            elif extension == ".xz":
+            elif extension == '.xz':
                 func = lzma.open
+            elif extension == '.zst' and zstandard:
+                func = zstandard.open
             else:
                 func = open
 
@@ -255,12 +289,16 @@ class CSVKitUtility:
         """
         kwargs = {}
 
+        field_size_limit = getattr(self.args, 'field_size_limit')
+        if field_size_limit is not None:
+            csv.field_size_limit(field_size_limit)
+
         if self.args.tabs:
             kwargs['delimiter'] = '\t'
         elif self.args.delimiter:
             kwargs['delimiter'] = self.args.delimiter
 
-        for arg in ('quotechar', 'quoting', 'doublequote', 'escapechar', 'field_size_limit', 'skipinitialspace'):
+        for arg in ('quotechar', 'quoting', 'doublequote', 'escapechar', 'skipinitialspace'):
             value = getattr(self.args, arg)
             if value is not None:
                 kwargs[arg] = value
@@ -302,31 +340,38 @@ class CSVKitUtility:
 
     def get_column_types(self):
         if getattr(self.args, 'blanks', None):
-            type_kwargs = {'null_values': ()}
+            type_kwargs = {'null_values': []}
         else:
-            type_kwargs = {}
+            type_kwargs = {'null_values': list(DEFAULT_NULL_VALUES)}
+        for null_value in getattr(self.args, 'null_values', []):
+            type_kwargs['null_values'].append(null_value)
 
         text_type = agate.Text(**type_kwargs)
 
-        if self.args.no_inference:
+        if getattr(self.args, 'no_inference', None):
             types = [text_type]
         else:
-            number_type = agate.Number(locale=self.args.locale, **type_kwargs)
+            number_type = agate.Number(
+                locale=self.args.locale, no_leading_zeroes=getattr(self.args, 'no_leading_zeroes', None), **type_kwargs
+            )
 
-            # See the order in the `agate.TypeTester` class.
-            types = [
-                agate.Boolean(**type_kwargs),
-                agate.TimeDelta(**type_kwargs),
-                agate.Date(date_format=self.args.date_format, **type_kwargs),
-                agate.DateTime(datetime_format=self.args.datetime_format, **type_kwargs),
-                text_type,
-            ]
-
-            # In order to parse dates like "20010101".
-            if self.args.date_format or self.args.datetime_format:
-                types.insert(-1, number_type)
+            if getattr(self.args, 'out_quoting', None) == 2:  # QUOTE_NONUMERIC
+                types = [number_type, text_type]
             else:
-                types.insert(1, number_type)
+                # See the order in the `agate.TypeTester` class.
+                types = [
+                    agate.Boolean(**type_kwargs),
+                    agate.TimeDelta(**type_kwargs),
+                    agate.Date(date_format=self.args.date_format, **type_kwargs),
+                    agate.DateTime(datetime_format=self.args.datetime_format, **type_kwargs),
+                    text_type,
+                ]
+
+                # In order to parse dates like "20010101".
+                if self.args.date_format or self.args.datetime_format:
+                    types.insert(-1, number_type)
+                else:
+                    types.insert(1, number_type)
 
         return agate.TypeTester(types=types)
 
@@ -401,6 +446,22 @@ def isatty(f):
         return f.isatty()
     except ValueError:  # I/O operation on closed file
         return False
+
+
+def default_str_decimal(obj):
+    if isinstance(obj, (datetime.date, datetime.datetime)):
+        return obj.isoformat()
+    if isinstance(obj, decimal.Decimal):
+        return str(obj)
+    raise TypeError(f'{repr(obj)} is not JSON serializable')
+
+
+def default_float_decimal(obj):
+    if isinstance(obj, datetime.timedelta):
+        return obj.total_seconds()
+    if isinstance(obj, decimal.Decimal):
+        return float(obj)
+    return default_str_decimal(obj)
 
 
 def make_default_headers(n):
@@ -502,3 +563,35 @@ def parse_column_identifiers(ids, column_names, column_offset=1, excluded_column
                     excludes.append(match_column_identifier(column_names, x, column_offset))
 
     return [c for c in columns if c not in excludes]
+
+
+def parse_list(pairs):
+    options = {}
+    for key, value in pairs:
+        try:
+            value = ast.literal_eval(value)
+        except ValueError:
+            pass
+        options[key] = value
+    return options
+
+
+# Adapted from https://github.com/pallets/click/blame/main/src/click/utils.py
+def _expand_args(args):
+    out = []
+
+    for arg in args:
+        arg = os.path.expanduser(arg)
+        arg = os.path.expandvars(arg)
+
+        try:
+            matches = glob(arg, recursive=True)
+        except re.error:
+            matches = []
+
+        if matches:
+            out.extend(matches)
+        else:
+            out.append(arg)
+
+    return out

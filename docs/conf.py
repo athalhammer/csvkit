@@ -11,8 +11,8 @@ sys.path.insert(0, os.path.abspath('..'))
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'csvkit'
-copyright = '2016, Christopher Groskopf'
-version = '1.1.1'
+copyright = '2016, Christopher Groskopf and James McKinney'
+version = '2.0.1'
 release = version
 
 # -- General configuration -----------------------------------------------------
@@ -50,6 +50,6 @@ for filename in os.listdir('scripts'):
         os.path.join('scripts', name),
         name,
         f'{name} Documentation',
-        ['Christopher Groskopf'],
+        ['Christopher Groskopf and contributors'],
         1,
     ))

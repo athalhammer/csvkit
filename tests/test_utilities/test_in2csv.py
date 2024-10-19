@@ -1,6 +1,6 @@
+import io
 import os
 import sys
-from io import StringIO
 from unittest.mock import patch
 
 from csvkit.utilities.in2csv import In2CSV, launch_new_instance
@@ -27,6 +27,33 @@ class TestIn2CSV(CSVKitTestCase, EmptyFileTests):
 
         self.assertEqual(e.exception.code, 0)
 
+    def test_args(self):
+        for args in ([], ['-']):
+            with self.subTest(args=args):
+                self.assertError(
+                    launch_new_instance,
+                    [],
+                    'You must specify a format when providing input as piped data via STDIN.',
+                    args=args,
+                )
+
+    def test_options(self):
+        for options, args, message in (
+            (
+                [],
+                ['dummy.unknown'],
+                'Unable to automatically determine the format of the input file. '
+                'Try specifying a format with --format.',
+            ),
+            (
+                ['-n'],
+                ['dummy.csv'],
+                'You cannot use the -n or --names options with non-Excel files.',
+            ),
+        ):
+            with self.subTest(args=options + args):
+                self.assertError(launch_new_instance, options, message, args=args)
+
     def test_locale(self):
         self.assertConverted('csv', 'examples/test_locale.csv',
                              'examples/test_locale_converted.csv', ['--locale', 'de_DE'])
@@ -36,6 +63,32 @@ class TestIn2CSV(CSVKitTestCase, EmptyFileTests):
 
     def test_blanks(self):
         self.assertConverted('csv', 'examples/blanks.csv', 'examples/blanks.csv', ['--blanks'])
+
+    def test_null_value(self):
+        input_file = io.BytesIO(b'a,b\nn/a,\\N')
+
+        with stdin_as_string(input_file):
+            self.assertLines(['-f', 'csv', '--null-value', '\\N'], [
+                'a,b',
+                ',',
+            ])
+
+        input_file.close()
+
+    def test_null_value_blanks(self):
+        input_file = io.BytesIO(b'a,b\nn/a,\\N')
+
+        with stdin_as_string(input_file):
+            self.assertLines(['-f', 'csv', '--null-value', '\\N', '--blanks'], [
+                'a,b',
+                'n/a,',
+            ])
+
+        input_file.close()
+
+    def test_no_leading_zeroes(self):
+        self.assertConverted('csv', 'examples/test_no_leading_zeroes.csv',
+                             'examples/test_no_leading_zeroes.csv', ['--no-leading-zeroes'])
 
     def test_date_format(self):
         self.assertConverted('csv', 'examples/test_date_format.csv',
@@ -131,7 +184,7 @@ class TestIn2CSV(CSVKitTestCase, EmptyFileTests):
                              ['--no-header-row', '--no-inference', '--snifflimit', '0'])
 
     def test_csv_datetime_inference(self):
-        input_file = StringIO('a\n2015-01-01T00:00:00Z')
+        input_file = io.BytesIO(b'a\n2015-01-01T00:00:00Z')
 
         with stdin_as_string(input_file):
             self.assertLines(['-f', 'csv'], [
@@ -160,9 +213,9 @@ class TestIn2CSV(CSVKitTestCase, EmptyFileTests):
         ])
 
     def test_geojson_no_inference(self):
-        input_file = StringIO(
-            '{"a": 1, "b": 2, "type": "FeatureCollection", "features": [{"geometry": {}, "properties": '
-            '{"a": 1, "b": 2, "c": 3}}]}')
+        input_file = io.BytesIO(
+            b'{"a": 1, "b": 2, "type": "FeatureCollection", "features": [{"geometry": {}, "properties": '
+            b'{"a": 1, "b": 2, "c": 3}}]}')
 
         with stdin_as_string(input_file):
             self.assertLines(['--no-inference', '-f', 'geojson'], [
@@ -173,7 +226,7 @@ class TestIn2CSV(CSVKitTestCase, EmptyFileTests):
         input_file.close()
 
     def test_json_no_inference(self):
-        input_file = StringIO('[{"a": 1, "b": 2, "c": 3}]')
+        input_file = io.BytesIO(b'[{"a": 1, "b": 2, "c": 3}]')
 
         with stdin_as_string(input_file):
             self.assertLines(['--no-inference', '-f', 'json'], [
@@ -184,7 +237,7 @@ class TestIn2CSV(CSVKitTestCase, EmptyFileTests):
         input_file.close()
 
     def test_ndjson_no_inference(self):
-        input_file = StringIO('{"a": 1, "b": 2, "c": 3}')
+        input_file = io.BytesIO(b'{"a": 1, "b": 2, "c": 3}')
 
         with stdin_as_string(input_file):
             self.assertLines(['--no-inference', '-f', 'ndjson'], [
@@ -233,5 +286,43 @@ class TestIn2CSV(CSVKitTestCase, EmptyFileTests):
         finally:
             for suffix in (0, 1):
                 path = 'examples/sheets_%d.csv' % suffix
+                if os.path.exists(path):
+                    os.remove(path)
+
+    def test_convert_xls_with_write_sheets_with_names(self):
+        try:
+            self.assertConverted('xls', 'examples/sheets.xls', 'examples/testxls_converted.csv',
+                                 ['--sheet', 'data', '--write-sheets', "ʤ,1", '--use-sheet-names'])
+            with open('examples/sheets_ʤ.csv', 'r') as f:
+                with open('examples/testxls_unicode_converted.csv', 'r') as g:
+                    self.assertEqual(f.read(), g.read())
+            with open('examples/sheets_data.csv', 'r') as f:
+                with open('examples/testxls_converted.csv', 'r') as g:
+                    self.assertEqual(f.read(), g.read())
+            self.assertFalse(os.path.exists('examples/sheets_0.csv'))
+            self.assertFalse(os.path.exists('examples/sheets_1.csv'))
+            self.assertFalse(os.path.exists('examples/sheets_2.csv'))
+        finally:
+            for suffix in ('ʤ', 'data'):
+                path = 'examples/sheets_%s.csv' % suffix
+                if os.path.exists(path):
+                    os.remove(path)
+
+    def test_convert_xlsx_with_write_sheets_with_names(self):
+        try:
+            self.assertConverted('xlsx', 'examples/sheets.xlsx', 'examples/testxlsx_noinference_converted.csv',
+                                 ['--no-inference', '--sheet', 'data', '--write-sheets', "ʤ,1", '--use-sheet-names'])
+            with open('examples/sheets_ʤ.csv', 'r') as f:
+                with open('examples/testxlsx_unicode_converted.csv', 'r') as g:
+                    self.assertEqual(f.read(), g.read())
+            with open('examples/sheets_data.csv', 'r') as f:
+                with open('examples/testxlsx_noinference_converted.csv', 'r') as g:
+                    self.assertEqual(f.read(), g.read())
+            self.assertFalse(os.path.exists('examples/sheets_0.csv'))
+            self.assertFalse(os.path.exists('examples/sheets_1.csv'))
+            self.assertFalse(os.path.exists('examples/sheets_2.csv'))
+        finally:
+            for suffix in ('ʤ', 'data'):
+                path = 'examples/sheets_%s.csv' % suffix
                 if os.path.exists(path):
                     os.remove(path)

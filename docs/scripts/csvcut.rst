@@ -45,10 +45,13 @@ See also: :doc:`../common_arguments`.
 
 .. note::
 
-    If a data row is longer than the header row, its additional columns are truncated. Use :doc:`csvclean` first to fix such rows.
+    If a data row is longer than the header row, its additional columns are truncated.
 
 Examples
 ========
+
+Print columns
+-------------
 
 Print the indices and names of all columns:
 
@@ -81,6 +84,9 @@ Print only the names of all columns, by removing the indices with the :code:`cut
    Post-Vietnam Era Veteran's Educational Assistance Program
    TOTAL
 
+Extract columns
+---------------
+
 Extract the first and third columns:
 
 .. code-block:: bash
@@ -93,18 +99,21 @@ Extract columns named "TOTAL" and "State Name" (in that order):
 
    csvcut -c TOTAL,"State Name" examples/realdata/FY09_EDU_Recipients_by_State.csv
 
-Add line numbers to a file, making no other changes:
-
-.. code-block:: bash
-
-   csvcut -l examples/realdata/FY09_EDU_Recipients_by_State.csv
-
 Extract a column that may not exist in all files:
 
 .. code-block:: bash
 
    echo d, | csvjoin examples/dummy.csv - | csvcut -c d
     echo d, | csvjoin examples/join_no_header_row.csv - | csvcut -c d
+
+Other
+-----
+
+Add line numbers to a file, making no other changes:
+
+.. code-block:: bash
+
+   csvcut -l examples/realdata/FY09_EDU_Recipients_by_State.csv
 
 Display a column's unique values:
 

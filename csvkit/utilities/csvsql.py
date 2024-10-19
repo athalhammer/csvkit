@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-
 import os.path
 import sys
 
@@ -7,7 +6,7 @@ import agate
 import agatesql  # noqa: F401
 from sqlalchemy import create_engine, dialects
 
-from csvkit.cli import CSVKitUtility, isatty
+from csvkit.cli import CSVKitUtility, isatty, parse_list
 
 try:
     import importlib_metadata
@@ -34,9 +33,13 @@ class CSVSQL(CSVKitUtility):
             '--db', dest='connection_string',
             help='If present, a SQLAlchemy connection string to use to directly execute generated SQL on a database.')
         self.argparser.add_argument(
+            '--engine-option', dest='engine_option', nargs=2, action='append', default=[],
+            help="A keyword argument to SQLAlchemy's create_engine(), as a space-separated pair. "
+                 "This option can be specified multiple times. For example: thick_mode True")
+        self.argparser.add_argument(
             '--query', dest='queries', action='append',
-            help='Execute one or more SQL queries delimited by ";" and output the result of the last query as CSV. '
-                 'QUERY may be a filename. --query may be specified multiple times.')
+            help='Execute one or more SQL queries delimited by --sql-delimiter, and output the result of the last '
+                 'query as CSV. QUERY may be a filename. --query may be specified multiple times.')
         self.argparser.add_argument(
             '--insert', dest='insert', action='store_true',
             help='Insert the data into the table. Requires --db.')
@@ -45,10 +48,15 @@ class CSVSQL(CSVKitUtility):
             help='Add an expression following the INSERT keyword, like OR IGNORE or OR REPLACE.')
         self.argparser.add_argument(
             '--before-insert', dest='before_insert',
-            help='Execute SQL before the INSERT command. Requires --insert.')
+            help='Before the INSERT command, execute one or more SQL queries delimited by --sql-delimiter. '
+                 'Requires --insert.')
         self.argparser.add_argument(
             '--after-insert', dest='after_insert',
-            help='Execute SQL after the INSERT command. Requires --insert.')
+            help='After the INSERT command, execute one or more SQL queries delimited by --sql-delimiter. '
+                 'Requires --insert.')
+        self.argparser.add_argument(
+            '--sql-delimiter', dest='sql_delimiter', default=';',
+            help='Delimiter separating SQL queries in --query, --before-insert, and --after-insert.')
         self.argparser.add_argument(
             '--tables', dest='table_names',
             help='A comma-separated list of names of tables to be created. By default, the tables will be named after '
@@ -77,13 +85,20 @@ class CSVSQL(CSVKitUtility):
                  'Specify "0" to disable sniffing entirely, or "-1" to sniff the entire file.')
         self.argparser.add_argument(
             '-I', '--no-inference', dest='no_inference', action='store_true',
-            help='Disable type inference when parsing the input.')
+            help='Disable type inference (and --locale, --date-format, --datetime-format, --no-leading-zeroes) '
+                 'when parsing the input.')
         self.argparser.add_argument(
             '--chunk-size', dest='chunk_size', type=int,
             help='Chunk size for batch insert into the table. Requires --insert.')
+        self.argparser.add_argument(
+            '--min-col-len', dest='min_col_len', type=int, default=1,
+            help='The minimum length of text columns.')
+        self.argparser.add_argument(
+            '--col-len-multiplier', dest='col_len_multiplier', type=int, default=1,
+            help='Multiply the maximum column length by this multiplier to accomodate larger values in later runs.')
 
     def main(self):
-        if isatty(sys.stdin) and not self.args.input_paths:
+        if isatty(sys.stdin) and self.args.input_paths == ['-']:
             self.argparser.error('You must provide an input file or piped data.')
 
         self.input_files = []
@@ -96,7 +111,7 @@ class CSVSQL(CSVKitUtility):
         if self.args.unique_constraint:
             self.unique_constraint = self.args.unique_constraint.split(',')
 
-        # Create an SQLite database in memory if no connection string is specified
+        # Create a SQLite database in memory if no connection string is specified
         if self.args.queries and not self.args.connection_string:
             self.args.connection_string = "sqlite:///:memory:"
             self.args.insert = True
@@ -131,14 +146,14 @@ class CSVSQL(CSVKitUtility):
         # Establish database validity before reading CSV files
         if self.args.connection_string:
             try:
-                engine = create_engine(self.args.connection_string)
+                engine = create_engine(self.args.connection_string, **parse_list(self.args.engine_option))
             except ImportError as e:
                 raise ImportError(
                     "You don't appear to have the necessary database backend installed for connection string you're "
                     "trying to use. Available backends include:\n\nPostgreSQL:\tpip install psycopg2\nMySQL:\t\tpip "
                     "install mysql-connector-python OR pip install mysqlclient\n\nFor details on connection strings "
                     "and other backends, please see the SQLAlchemy documentation on dialects at:\n\n"
-                    "https://www.sqlalchemy.org/docs/dialects/\n\n"
+                    "https://www.sqlalchemy.org/docs/dialects/"
                 ) from e
 
             self.connection = engine.connect()
@@ -191,7 +206,7 @@ class CSVSQL(CSVKitUtility):
             if table:
                 if self.connection:
                     if self.args.before_insert:
-                        for query in self.args.before_insert.split(';'):
+                        for query in self.args.before_insert.split(self.args.sql_delimiter):
                             self.connection.exec_driver_sql(query)
 
                     table.to_sql(
@@ -206,10 +221,12 @@ class CSVSQL(CSVKitUtility):
                         constraints=not self.args.no_constraints,
                         unique_constraint=self.unique_constraint,
                         chunk_size=self.args.chunk_size,
+                        min_col_len=self.args.min_col_len,
+                        col_len_multiplier=self.args.col_len_multiplier,
                     )
 
                     if self.args.after_insert:
-                        for query in self.args.after_insert.split(';'):
+                        for query in self.args.after_insert.split(self.args.sql_delimiter):
                             self.connection.exec_driver_sql(query)
 
                 # Output SQL statements
@@ -231,7 +248,7 @@ class CSVSQL(CSVKitUtility):
                     if os.path.exists(query):
                         with open(query) as f:
                             query = f.read()
-                    queries += query.split(';')
+                    queries += query.split(self.args.sql_delimiter)
 
                 # Execute the specified SQL queries.
                 rows = None

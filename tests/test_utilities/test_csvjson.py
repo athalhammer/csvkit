@@ -1,6 +1,6 @@
+import io
 import json
 import sys
-from io import StringIO
 from unittest.mock import patch
 
 from csvkit.utilities.csvjson import CSVJSON, launch_new_instance
@@ -13,6 +13,24 @@ class TestCSVJSON(CSVKitTestCase, EmptyFileTests):
     def test_launch_new_instance(self):
         with patch.object(sys, 'argv', [self.Utility.__name__.lower(), 'examples/dummy.csv']):
             launch_new_instance()
+
+    def test_options(self):
+        self.assertError(
+            launch_new_instance,
+            ['--key', 'value', '--stream'],
+            '--key is only allowed with --stream when --lat and --lon are also specified.',
+        )
+
+    def test_latlon_options(self):
+        for option, message in (
+            ('lat', '--lon is required whenever --lat is specified.'),
+            ('lon', '--lat is required whenever --lon is specified.'),
+            ('crs', '--crs is only allowed when --lat and --lon are also specified.'),
+            ('type', '--type is only allowed when --lat and --lon are also specified.'),
+            ('geometry', '--geometry is only allowed when --lat and --lon are also specified.'),
+        ):
+            with self.subTest(option=option):
+                self.assertError(launch_new_instance, [f'--{option}', 'value'], message)
 
     def test_simple(self):
         js = json.loads(self.get_output(['examples/dummy.csv']))
@@ -58,7 +76,7 @@ class TestCSVJSON(CSVKitTestCase, EmptyFileTests):
         self.assertDictEqual(js, {'True': {'a': True, 'c': 3.0, 'b': 2.0}})
 
     def test_duplicate_keys(self):
-        output_file = StringIO()
+        output_file = io.StringIO()
         utility = CSVJSON(['-k', 'a', 'examples/dummy3.csv'], output_file)
         self.assertRaisesRegex(ValueError,
                                'Value True is not unique in the key column.',

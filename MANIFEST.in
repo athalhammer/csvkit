@@ -5,5 +5,7 @@ recursive-include docs *.rst
 recursive-include docs *.txt
 recursive-include docs Makefile
 recursive-include examples *
+recursive-include man *.1
 recursive-include tests *.py
 exclude .readthedocs.yaml
+exclude Dockerfile

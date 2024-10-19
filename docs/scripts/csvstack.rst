@@ -13,7 +13,7 @@ Stack up the rows from multiple CSV files, optionally adding a grouping value to
                    [-p ESCAPECHAR] [-z FIELD_SIZE_LIMIT] [-e ENCODING] [-S] [-H]
                    [-K SKIP_LINES] [-v] [-l] [--zero] [-V] [-g GROUPS]
                    [-n GROUP_NAME] [--filenames]
-                   FILE [FILE ...]
+                   [FILE [FILE ...]]
 
    Stack up the rows from multiple CSV files, optionally adding a grouping value.
 
@@ -25,9 +25,9 @@ Stack up the rows from multiple CSV files, optionally adding a grouping value to
      -h, --help            show this help message and exit
      -g GROUPS, --groups GROUPS
                            A comma-separated list of values to add as "grouping
-                           factors", one for each CSV being stacked. These are
-                           added to the output as a new column. You may specify a
-                           name for the new column using the -n flag.
+                           factors", one per CSV being stacked. These are added
+                           to the output as a new column. You may specify a name
+                           for the new column using the -n flag.
      -n GROUP_NAME, --group-name GROUP_NAME
                            A name for the grouping column, e.g. "year". Only used
                            when also specifying -g.
@@ -43,7 +43,7 @@ See also: :doc:`../common_arguments`.
 Examples
 ========
 
-Joining a set of files for different years:
+Join a set of files for different years:
 
 .. code-block:: bash
 

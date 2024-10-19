@@ -11,15 +11,17 @@ Generate SQL statements for a CSV file or execute those statements directly on a
 
    usage: csvsql [-h] [-d DELIMITER] [-t] [-q QUOTECHAR] [-u {0,1,2,3}] [-b]
                  [-p ESCAPECHAR] [-z FIELD_SIZE_LIMIT] [-e ENCODING] [-L LOCALE]
-                 [-S] [--blanks] [--date-format DATE_FORMAT]
-                 [--datetime-format DATETIME_FORMAT] [-H] [-K SKIP_LINES] [-v]
-                 [-l] [--zero] [-V]
-                 [-i {firebird,mssql,mysql,oracle,postgresql,sqlite,sybase,crate}]
-                 [--db CONNECTION_STRING] [--query QUERY] [--insert]
-                 [--prefix PREFIX] [--tables TABLE_NAMES] [--no-constraints]
-                 [--unique-constraint UNIQUE_CONSTRAINT] [--no-create]
-                 [--create-if-not-exists] [--overwrite] [--db-schema DB_SCHEMA]
-                 [-y SNIFF_LIMIT] [-I] [--chunk-size NUM]
+                 [-S] [--blanks] [--null-value NULL_VALUES [NULL_VALUES ...]]
+                 [--date-format DATE_FORMAT] [--datetime-format DATETIME_FORMAT]
+                 [-H] [-K SKIP_LINES] [-v] [-l] [--zero] [-V]
+                 [-i {firebird,mssql,mysql,oracle,postgresql,sqlite,sybase}]
+                 [--db CONNECTION_STRING] [--query QUERIES] [--insert]
+                 [--prefix PREFIX] [--before-insert BEFORE_INSERT]
+                 [--after-insert AFTER_INSERT] [--tables TABLE_NAMES]
+                 [--no-constraints] [--unique-constraint UNIQUE_CONSTRAINT]
+                 [--no-create] [--create-if-not-exists] [--overwrite]
+                 [--db-schema DB_SCHEMA] [-y SNIFF_LIMIT] [-I]
+                 [--chunk-size CHUNK_SIZE]
                  [FILE [FILE ...]]
 
    Generate SQL statements for one or more CSV files, or execute those statements
@@ -31,23 +33,33 @@ Generate SQL statements for a CSV file or execute those statements directly on a
 
    optional arguments:
      -h, --help            show this help message and exit
-     -i {firebird,mssql,mysql,oracle,postgresql,sqlite,sybase,crate}, --dialect {firebird,mssql,mysql,oracle,postgresql,sqlite,sybase,crate}
+     -i {mssql,mysql,oracle,postgresql,sqlite,duckdb,crate,ingres}, --dialect {mssql,mysql,oracle,postgresql,sqlite,duckdb,crate,ingres}
                            Dialect of SQL to generate. Cannot be used with --db.
      --db CONNECTION_STRING
                            If present, a SQLAlchemy connection string to use to
                            directly execute generated SQL on a database.
-     --query QUERY         Execute one or more SQL queries delimited by ";" and
-                           output the result of the last query as CSV. QUERY may
-                           be a filename.
+     --engine-option ENGINE_OPTION ENGINE_OPTION
+                           A keyword argument to SQLAlchemy's create_engine(), as
+                           a space-separated pair. This option can be specified
+                           multiple times. For example: thick_mode True
+     --query QUERIES       Execute one or more SQL queries delimited by --sql-
+                           delimiter, and output the result of the last query as
+                           CSV. QUERY may be a filename. --query may be specified
+                           multiple times.
      --insert              Insert the data into the table. Requires --db.
      --prefix PREFIX       Add an expression following the INSERT keyword, like
                            OR IGNORE or OR REPLACE.
      --before-insert BEFORE_INSERT
-                           Execute SQL before the INSERT command. Requires
+                           Before the INSERT command, execute one or more SQL
+                           queries delimited by --sql-delimiter. Requires
                            --insert.
      --after-insert AFTER_INSERT
-                           Execute SQL after the INSERT command. Requires
+                           After the INSERT command, execute one or more SQL
+                           queries delimited by --sql-delimiter. Requires
                            --insert.
+     --sql-delimiter SQL_DELIMITER
+                           Delimiter separating SQL queries in --query, --before-
+                           insert, and --after-insert.
      --tables TABLE_NAMES  A comma-separated list of names of tables to be
                            created. By default, the tables will be named after
                            the filenames without extensions or "stdin".
@@ -67,11 +79,20 @@ Generate SQL statements for a CSV file or execute those statements directly on a
                            in.
      -y SNIFF_LIMIT, --snifflimit SNIFF_LIMIT
                            Limit CSV dialect sniffing to the specified number of
-                           bytes. Specify "0" to disable sniffing.
-     -I, --no-inference    Disable type inference when parsing the input.
+                           bytes. Specify "0" to disable sniffing entirely, or
+                           "-1" to sniff the entire file.
+     -I, --no-inference    Disable type inference (and --locale, --date-format,
+                           --datetime-format, --no-leading-zeroes) when parsing
+                           the input.
      --chunk-size CHUNK_SIZE
                            Chunk size for batch insert into the table. Requires
                            --insert.
+     --min-col-len MIN_COL_LEN
+                           The minimum length of text columns.
+     --col-len-multiplier COL_LEN_MULTIPLIER
+                           Multiply the maximum column length by this multiplier
+                           to accomodate larger values in later runs.
+
 
 See also: :doc:`../common_arguments`.
 
@@ -98,11 +119,17 @@ If you prefer not to enter your password in the connection string, store the pas
 Examples
 ========
 
+Generate SQL statements
+-----------------------
+
 Generate a statement in the PostgreSQL dialect:
 
 .. code-block:: bash
 
    csvsql -i postgresql examples/realdata/FY09_EDU_Recipients_by_State.csv
+
+Interact with a SQL database
+----------------------------
 
 Create a table and import data from the CSV directly into PostgreSQL:
 
@@ -117,7 +144,7 @@ For large tables it may not be practical to process the entire table. One soluti
 
    head -n 20 examples/realdata/FY09_EDU_Recipients_by_State.csv | csvsql --no-constraints --tables fy09
 
-Create tables for an entire folder of CSVs and import data from those files directly into PostgreSQL:
+Create tables for an entire directory of CSVs and import data from those files directly into PostgreSQL:
 
 .. code-block:: bash
 
@@ -131,26 +158,35 @@ If those CSVs have identical headers, you can import them into the same table by
    createdb test
    csvstack examples/dummy?.csv | csvsql --db postgresql:///test --insert
 
+Query and output CSV files using SQL
+------------------------------------
+
+You can use csvsql to "directly" query one or more CSV files. Please note that this will create an in-memory SQLite database, so it won't be very fast:
+
+.. code-block:: bash
+
+   csvsql --query  "SELECT m.usda_id, avg(i.sepal_length) AS mean_sepal_length FROM iris AS i JOIN irismeta AS m ON (i.species = m.species) GROUP BY m.species" examples/iris.csv examples/irismeta.csv
+
 Group rows by one column:
 
 .. code-block:: bash
 
-   csvsql --query "select * from 'dummy3' group by a" examples/dummy3.csv
-
-You can also use CSVSQL to "directly" query one or more CSV files. Please note that this will create an in-memory SQL database, so it won't be very fast:
-
-.. code-block:: bash
-
-   csvsql --query  "select m.usda_id, avg(i.sepal_length) as mean_sepal_length from iris as i join irismeta as m on (i.species = m.species) group by m.species" examples/iris.csv examples/irismeta.csv
+   csvsql --query "SELECT * FROM 'dummy3' GROUP BY a" examples/dummy3.csv
 
 Concatenate two columns:
 
 .. code-block:: bash
 
-   csvsql --query "select a || b from 'dummy3'" examples/dummy3.csv
+   csvsql --query "SELECT a || b FROM 'dummy3'" --no-inference examples/dummy3.csv
 
 If a column contains null values, you must ``COALESCE`` the column:
 
 .. code-block:: bash
 
-   csvsql --query "select a || COALESCE(b, '') from 'sort_ints_nulls'" --no-inference examples/sort_ints_nulls.csv
+   csvsql --query "SELECT a || COALESCE(b, '') FROM 'sort_ints_nulls'" --no-inference examples/sort_ints_nulls.csv
+
+The ``UPDATE`` SQL statement produces no output. Remember to ``SELECT`` the columns and rows you want:
+
+.. code-block:: bash
+
+   csvsql --query "UPDATE 'dummy3' SET a = 'foo'; SELECT * FROM 'dummy3'" examples/dummy3.csv

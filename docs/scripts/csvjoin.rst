@@ -11,10 +11,10 @@ Merges two or more CSV tables together using a method analogous to SQL JOIN oper
 
    usage: csvjoin [-h] [-d DELIMITER] [-t] [-q QUOTECHAR] [-u {0,1,2,3}] [-b]
                   [-p ESCAPECHAR] [-z FIELD_SIZE_LIMIT] [-e ENCODING] [-L LOCALE]
-                  [-S] [--blanks] [--date-format DATE_FORMAT]
-                  [--datetime-format DATETIME_FORMAT] [-H] [-K SKIP_LINES] [-v]
-                  [-l] [--zero] [-V] [-c COLUMNS] [--outer] [--left] [--right]
-                  [-y SNIFF_LIMIT] [-I]
+                  [-S] [--blanks] [--null-value NULL_VALUES [NULL_VALUES ...]]
+                  [--date-format DATE_FORMAT] [--datetime-format DATETIME_FORMAT]
+                  [-H] [-K SKIP_LINES] [-v] [-l] [--zero] [-V] [-c COLUMNS]
+                  [--outer] [--left] [--right] [-y SNIFF_LIMIT] [-I]
                   [FILE [FILE ...]]
 
    Execute a SQL-like join to merge CSV files on a specified column or columns.
@@ -43,8 +43,11 @@ Merges two or more CSV tables together using a method analogous to SQL JOIN oper
                            starting at the right.
      -y SNIFF_LIMIT, --snifflimit SNIFF_LIMIT
                            Limit CSV dialect sniffing to the specified number of
-                           bytes. Specify "0" to disable sniffing.
-     -I, --no-inference    Disable type inference when parsing CSV input.
+                           bytes. Specify "0" to disable sniffing entirely, or
+                           "-1" to sniff the entire file.
+     -I, --no-inference    Disable type inference (and --locale, --date-format,
+                           --datetime-format, --no-leading-zeroes) when parsing
+                           the input.
 
    Note that the join operation requires reading all files into memory. Don't try
    this on very large files.

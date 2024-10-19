@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import functools
 import sys
 from io import BytesIO
 from os.path import splitext
@@ -47,6 +48,12 @@ class In2CSV(CSVKitUtility):
             '--write-sheets', dest='write_sheets',
             help='The names of the Excel sheets to write to files, or "-" to write all sheets.')
         self.argparser.add_argument(
+            '--use-sheet-names', dest='use_sheet_names', action='store_true',
+            help='Use the sheet names as file names when --write-sheets is set.')
+        self.argparser.add_argument(
+            '--reset-dimensions', dest='reset_dimensions', action='store_true', default=None,
+            help='Ignore the sheet dimensions provided by the XLSX file.')
+        self.argparser.add_argument(
             '--encoding-xls', dest='encoding_xls',
             help='Specify the encoding of the input XLS file.')
         self.argparser.add_argument(
@@ -55,11 +62,17 @@ class In2CSV(CSVKitUtility):
                  'Specify "0" to disable sniffing entirely, or "-1" to sniff the entire file.')
         self.argparser.add_argument(
             '-I', '--no-inference', dest='no_inference', action='store_true',
-            help='Disable type inference (and --locale, --date-format, --datetime-format) when parsing CSV input.')
+            help='Disable type inference (and --locale, --date-format, --datetime-format, --no-leading-zeroes) '
+                 'when parsing CSV input.')
+
+    # This is called only from open_excel_input_file(), but is a separate method to use caching.
+    @functools.lru_cache
+    def stdin(self):
+        return sys.stdin.buffer.read()
 
     def open_excel_input_file(self, path):
         if not path or path == '-':
-            return BytesIO(sys.stdin.buffer.read())
+            return BytesIO(self.stdin())
         return open(path, 'rb')
 
     def sheet_names(self, path, filetype):
@@ -152,7 +165,9 @@ class In2CSV(CSVKitUtility):
                 table = agate.Table.from_xls(self.input_file, sheet=self.args.sheet,
                                              encoding_override=self.args.encoding_xls, **kwargs)
             elif filetype == 'xlsx':
-                table = agate.Table.from_xlsx(self.input_file, sheet=self.args.sheet, **kwargs)
+                table = agate.Table.from_xlsx(
+                    self.input_file, sheet=self.args.sheet, reset_dimensions=self.args.reset_dimensions, **kwargs
+                )
             elif filetype == 'dbf':
                 if not hasattr(self.input_file, 'name'):
                     raise ValueError('DBF files can not be converted from stdin. You must pass a filename.')
@@ -174,11 +189,20 @@ class In2CSV(CSVKitUtility):
                 tables = agate.Table.from_xls(self.input_file, sheet=sheets,
                                               encoding_override=self.args.encoding_xls, **kwargs)
             elif filetype == 'xlsx':
-                tables = agate.Table.from_xlsx(self.input_file, sheet=sheets, **kwargs)
+                tables = agate.Table.from_xlsx(
+                    self.input_file, sheet=sheets, reset_dimensions=self.args.reset_dimensions, **kwargs
+                )
 
-            base = splitext(self.input_file.name)[0]
-            for i, table in enumerate(tables.values()):
-                with open('%s_%d.csv' % (base, i), 'w') as f:
+            if not path or path == '-':
+                base = 'stdin'
+            else:
+                base = splitext(self.input_file.name)[0]
+            for i, (sheet_name, table) in enumerate(tables.items()):
+                if self.args.use_sheet_names:
+                    filename = '%s_%s.csv' % (base, sheet_name)
+                else:
+                    filename = '%s_%d.csv' % (base, i)
+                with open(filename, 'w') as f:
                     table.to_csv(f, **self.writer_kwargs)
 
         self.input_file.close()

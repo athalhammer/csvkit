@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import json
 import locale
 import warnings
 from collections import Counter, OrderedDict
@@ -7,7 +8,7 @@ from decimal import Decimal
 
 import agate
 
-from csvkit.cli import CSVKitUtility, parse_column_identifiers
+from csvkit.cli import CSVKitUtility, default_float_decimal, parse_column_identifiers
 
 locale.setlocale(locale.LC_ALL, '')
 OPERATIONS = OrderedDict([
@@ -18,6 +19,10 @@ OPERATIONS = OrderedDict([
     ('nulls', {
         'aggregation': agate.HasNulls,
         'label': 'Contains null values: ',
+    }),
+    ('nonnulls', {
+        'aggregation': agate.Count,
+        'label': 'Non-null values: ',
     }),
     ('unique', {
         'aggregation': None,
@@ -51,6 +56,10 @@ OPERATIONS = OrderedDict([
         'aggregation': agate.MaxLength,
         'label': 'Longest value: ',
     }),
+    ('maxprecision', {
+        'aggregation': agate.MaxPrecision,
+        'label': 'Most decimal places: ',
+    }),
     ('freq', {
         'aggregation': None,
         'label': 'Most common values: ',
@@ -60,12 +69,17 @@ OPERATIONS = OrderedDict([
 
 class CSVStat(CSVKitUtility):
     description = 'Print descriptive statistics for each column in a CSV file.'
-    override_flags = ['L', 'blanks', 'date-format', 'datetime-format']
 
     def add_arguments(self):
         self.argparser.add_argument(
             '--csv', dest='csv_output', action='store_true',
-            help='Output results as a CSV, rather than text.')
+            help='Output results as a CSV table, rather than plain text.')
+        self.argparser.add_argument(
+            '--json', dest='json_output', action='store_true',
+            help='Output results as JSON text, rather than plain text.')
+        self.argparser.add_argument(
+            '-i', '--indent', dest='indent', type=int,
+            help='Indent the output JSON this many spaces. Disabled by default.')
         self.argparser.add_argument(
             '-n', '--names', dest='names_only', action='store_true',
             help='Display column names and indices from the input CSV and exit.')
@@ -79,6 +93,9 @@ class CSVStat(CSVKitUtility):
         self.argparser.add_argument(
             '--nulls', dest='nulls_only', action='store_true',
             help='Only output whether columns contains nulls.')
+        self.argparser.add_argument(
+            '--non-nulls', dest='nonnulls_only', action='store_true',
+            help='Only output counts of non-null values.')
         self.argparser.add_argument(
             '--unique', dest='unique_only', action='store_true',
             help='Only output counts of unique values.')
@@ -104,6 +121,9 @@ class CSVStat(CSVKitUtility):
             '--len', dest='len_only', action='store_true',
             help='Only output the length of the longest values.')
         self.argparser.add_argument(
+            '--max-precision', dest='maxprecision_only', action='store_true',
+            help='Only output the most decimal places.')
+        self.argparser.add_argument(
             '--freq', dest='freq_only', action='store_true',
             help='Only output lists of frequent values.')
         self.argparser.add_argument(
@@ -123,6 +143,10 @@ class CSVStat(CSVKitUtility):
             '-y', '--snifflimit', dest='sniff_limit', type=int, default=1024,
             help='Limit CSV dialect sniffing to the specified number of bytes. '
                  'Specify "0" to disable sniffing entirely, or "-1" to sniff the entire file.')
+        self.argparser.add_argument(
+            '-I', '--no-inference', dest='no_inference', action='store_true',
+            help='Disable type inference (and --locale, --date-format, --datetime-format, --no-leading-zeroes) '
+                 'when parsing the input.')
 
     def main(self):
         if self.args.names_only:
@@ -140,7 +164,9 @@ class CSVStat(CSVKitUtility):
         if operations and self.args.csv_output:
             self.argparser.error(
                 'You may not specify --csv and an operation (--mean, --median, etc) at the same time.')
-
+        if operations and self.args.json_output:
+            self.argparser.error(
+                'You may not specify --json and an operation (--mean, --median, etc) at the same time.')
         if operations and self.args.count_only:
             self.argparser.error(
                 'You may not specify --count and an operation (--mean, --median, etc) at the same time.')
@@ -160,6 +186,7 @@ class CSVStat(CSVKitUtility):
             self.input_file,
             skip_lines=self.args.skip_lines,
             sniff_limit=sniff_limit,
+            column_types=self.get_column_types(),
             **self.reader_kwargs,
         )
 
@@ -187,23 +214,17 @@ class CSVStat(CSVKitUtility):
             for column_id in column_ids:
                 stats[column_id] = self.calculate_stats(table, column_id, **kwargs)
 
-            # Output as CSV
             if self.args.csv_output:
                 self.print_csv(table, column_ids, stats)
-            # Output all stats
+            elif self.args.json_output:
+                self.print_json(table, column_ids, stats)
             else:
                 self.print_stats(table, column_ids, stats)
 
     def is_finite_decimal(self, value):
         return isinstance(value, Decimal) and value.is_finite()
 
-    def print_one(self, table, column_id, operation, label=True, **kwargs):
-        """
-        Print data for a single statistic.
-        """
-        column_name = table.column_names[column_id]
-
-        op_name = operation
+    def _calculate_stat(self, table, column_id, op_name, op_data, **kwargs):
         getter = globals().get(f'get_{op_name}')
 
         with warnings.catch_warnings():
@@ -211,15 +232,25 @@ class CSVStat(CSVKitUtility):
 
             try:
                 if getter:
-                    stat = getter(table, column_id, **kwargs)
-                else:
-                    op = OPERATIONS[op_name]['aggregation']
-                    stat = table.aggregate(op(column_id))
+                    return getter(table, column_id, **kwargs)
 
-                    if self.is_finite_decimal(stat):
-                        stat = format_decimal(stat, self.args.decimal_format, self.args.no_grouping_separator)
+                op = op_data['aggregation']
+                v = table.aggregate(op(column_id))
+
+                if self.is_finite_decimal(v) and not self.args.json_output:
+                    return format_decimal(v, self.args.decimal_format, self.args.no_grouping_separator)
+
+                return v
             except Exception:
-                stat = None
+                pass
+
+    def print_one(self, table, column_id, op_name, label=True, **kwargs):
+        """
+        Print data for a single statistic.
+        """
+        column_name = table.column_names[column_id]
+
+        stat = self._calculate_stat(table, column_id, op_name, OPERATIONS[op_name], **kwargs)
 
         # Formatting
         if op_name == 'freq':
@@ -235,29 +266,10 @@ class CSVStat(CSVKitUtility):
         """
         Calculate stats for all valid operations.
         """
-        stats = {}
-
-        for op_name, op_data in OPERATIONS.items():
-            getter = globals().get(f'get_{op_name}')
-
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore', agate.NullCalculationWarning)
-
-                try:
-                    if getter:
-                        stats[op_name] = getter(table, column_id, **kwargs)
-                    else:
-                        op = op_data['aggregation']
-                        v = table.aggregate(op(column_id))
-
-                        if self.is_finite_decimal(v):
-                            v = format_decimal(v, self.args.decimal_format, self.args.no_grouping_separator)
-
-                        stats[op_name] = v
-                except Exception:
-                    stats[op_name] = None
-
-        return stats
+        return {
+            op_name: self._calculate_stat(table, column_id, op_name, op_data, **kwargs)
+            for op_name, op_data in OPERATIONS.items()
+        }
 
     def print_stats(self, table, column_ids, stats):
         """
@@ -318,39 +330,44 @@ class CSVStat(CSVKitUtility):
 
     def print_csv(self, table, column_ids, stats):
         """
-        Print data for all statistics as a csv table.
+        Print data for all statistics as a CSV table.
         """
-        writer = agate.csv.writer(self.output_file)
+        header = ['column_id', 'column_name'] + list(OPERATIONS)
 
-        header = ['column_id', 'column_name'] + list(OPERATIONS.keys())
+        writer = agate.csv.DictWriter(self.output_file, fieldnames=header)
+        writer.writeheader()
 
-        writer.writerow(header)
+        for row in self._rows(table, column_ids, stats):
+            if 'freq' in row:
+                row['freq'] = ', '.join([str(row['value']) for row in row['freq']])
+            writer.writerow(row)
 
+    def print_json(self, table, column_ids, stats):
+        """
+        Print data for all statistics as a JSON text.
+        """
+        data = list(self._rows(table, column_ids, stats))
+
+        json.dump(data, self.output_file, default=default_float_decimal, ensure_ascii=False, indent=self.args.indent)
+
+    def _rows(self, table, column_ids, stats):
         for column_id in column_ids:
             column_name = table.column_names[column_id]
             column_stats = stats[column_id]
 
-            output_row = [column_id + 1, column_name]
-
+            output_row = {'column_id': column_id + 1, 'column_name': column_name}
             for op_name, _op_data in OPERATIONS.items():
-                if column_stats[op_name] is None:
-                    output_row.append(None)
-                    continue
+                if column_stats[op_name] is not None:
+                    output_row[op_name] = column_stats[op_name]
 
-                if op_name == 'freq':
-                    value = ', '.join([str(row['value']) for row in column_stats['freq']])
-                else:
-                    value = column_stats[op_name]
-
-                output_row.append(value)
-
-            writer.writerow(output_row)
+            yield output_row
 
 
 def format_decimal(d, f='%.3f', no_grouping_separator=False):
     return locale.format_string(f, d, grouping=not no_grouping_separator).rstrip('0').rstrip('.')
 
 
+# These are accessed via: globals().get(f'get_{op_name}')
 def get_type(table, column_id, **kwargs):
     return f'{table.columns[column_id].data_type.__class__.__name__}'
 
